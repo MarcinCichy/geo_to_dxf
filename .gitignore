@@ -1,1 +1,3 @@
 *.geo
+*.dxf
+/__pycache__/
