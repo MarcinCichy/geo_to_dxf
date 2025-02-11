@@ -28,14 +28,18 @@ def compute_arc_params(cx, cy, sx, sy, ex, ey, direction):
     return (cx, cy, r, a_s, a_e)
 
 
-def write_dxf(dxf_filename, points, lines, arcs):
+def write_dxf(dxf_filename, points, lines, arcs, circles):
     """
     Zapisuje plik DXF (R12), ustawiając kolor (group code 62)
     zgodnie z color_idx (2 = żółty, 7 = domyślny).
 
     lines: [(start_p, end_p, color_idx), ...]
     arcs:  [(center_p, start_p, end_p, direction, color_idx), ...]
+    circles: [(center_p, radius, color_idx), ...]   # nowa obsługa okręgów (CIR)
     """
+    if circles is None:
+        circles = []
+
     with open(dxf_filename, 'w', encoding='utf-8') as f:
         f.write("0\nSECTION\n  2\nENTITIES\n")
 
@@ -65,5 +69,14 @@ def write_dxf(dxf_filename, points, lines, arcs):
             f.write(f" 40\n{r}\n")
             f.write(f" 50\n{ang_s}\n")
             f.write(f" 51\n{ang_e}\n")
+
+        # Zapis okręgów
+        for (center_id, radius, color_idx) in circles:
+            cx, cy, _ = points[center_id]
+            f.write("  0\nCIRCLE\n")
+            f.write("  8\n0\n")  # warstwa "0"
+            f.write(f" 62\n{color_idx}\n")
+            f.write(f" 10\n{cx}\n 20\n{cy}\n")
+            f.write(f" 40\n{radius}\n")
 
         f.write("  0\nENDSEC\n  0\nEOF\n")

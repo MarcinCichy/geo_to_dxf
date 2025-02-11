@@ -6,16 +6,18 @@ def parse_geo(geo_filename):
       - points: słownik {nr_punktu: (x, y, z)}
       - lines: lista [(start_p, end_p, color_idx), ...]
       - arcs:  lista [(center_p, start_p, end_p, direction, color_idx), ...]
+      - circles: lista [(center_p, radius, color_idx), ...]  # nowa obsługa okręgów (CIR)
 
     Logika:
       - W sekcji "LIN" pobieramy linię parametrów (np. "1 0", "3 0" itd.).
         Jeśli w tokenach pojawi się '2' lub '3', uznajemy, że to grawerka (kolor żółty, 2),
         w przeciwnym razie domyślnie kolor wynosi 7.
-      - Analogicznie dla poleceń "ARC".
+      - Analogicznie dla poleceń "ARC" oraz "CIR".
     """
     points = {}
     lines_list = []
     arcs = []
+    circles = []  # lista dla elementów CIR
 
     with open(geo_filename, 'r', encoding='utf-8') as f:
         file_lines = [line.strip() for line in f]
@@ -46,15 +48,15 @@ def parse_geo(geo_filename):
         # Parsowanie sekcji punktów
         if in_points_section:
             if line == "P":
-                # Kolejne linie: identyfikator, współrzędne, a potem separator ("|~")
+                # Kolejne linie: "P", id, współrzędne, separator ("|~")
                 point_id = int(file_lines[i + 1])
                 coords = file_lines[i + 2].split()
                 x, y, z = float(coords[0]), float(coords[1]), float(coords[2])
                 points[point_id] = (x, y, z)
-                i += 4  # pomijamy: "P", id, współrzędne, "|~"
+                i += 4  # pomijamy "P", id, współrzędne, "|~"
                 continue
 
-        # Parsowanie sekcji krawędzi (LIN/ARC)
+        # Parsowanie sekcji krawędzi (LIN/ARC/CIR)
         if in_edges_section:
             if line == "LIN":
                 # Pobieramy linię parametrów (np. "1 0" lub "3 0")
@@ -100,6 +102,25 @@ def parse_geo(geo_filename):
                 i += 5  # ARC, param_line, punkty, kierunek, separator ("|~")
                 continue
 
+            elif line == "CIR":
+                param_line = file_lines[i + 1]
+                tokens = param_line.split()
+
+                if any(token in {"2", "3"} for token in tokens):
+                    color_index = 2
+                else:
+                    color_index = 7
+
+                # Pobieramy identyfikator punktu środkowego okręgu oraz promień
+                center_line = file_lines[i + 2]
+                center_id = int(center_line)
+                radius_line = file_lines[i + 3]
+                radius = float(radius_line)
+
+                circles.append((center_id, radius, color_index))
+                i += 5  # CIR, param_line, center, radius, separator ("|~")
+                continue
+
         i += 1
 
-    return points, lines_list, arcs
+    return points, lines_list, arcs, circles

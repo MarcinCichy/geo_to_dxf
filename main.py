@@ -10,8 +10,8 @@ def geo_to_dxf(geo_file, dxf_file):
         to traktujemy ją jako grawer (kolor żółty, czyli 2).
       - W przeciwnym wypadku kolor domyślny wynosi 7.
     """
-    points, lines, arcs = parse_geo(geo_file)
-    write_dxf(dxf_file, points, lines, arcs)
+    points, lines, arcs, circles = parse_geo(geo_file)
+    write_dxf(dxf_file, points, lines, arcs, circles)
     print(f"Plik GEO '{geo_file}' został skonwertowany do '{dxf_file}'.")
 
 def main():
