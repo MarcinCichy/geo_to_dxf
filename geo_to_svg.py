@@ -105,7 +105,7 @@ def geo_to_thumbnail(geo_file, output_file="output.svg", margin=10):
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python geo_to_thumbnail.py <plik.geo> <output.svg>")
+        print("Usage: python geo_to_svg.py <plik.geo> <output.svg>")
         sys.exit(1)
     geo_file = sys.argv[1]
     output_file = sys.argv[2]

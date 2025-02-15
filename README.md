@@ -21,6 +21,9 @@ This project is a simple Python converter that transforms GEO files (in Trumpf f
 - **write_dxf.py**  
   This module generates the DXF file. The `write_dxf` function creates the corresponding DXF entities based on the parsed data (points, lines, arcs, circles).
 
+- **geo_to_svg.py**  
+  This module generates an SVG file from the parsed GEO data. It creates SVG elements for points, lines, arcs, and circles using their respective coordinates and attributes, allowing a visual preview of the GEO file.
+
 - **README.md**  
   This file contains the project description and usage instructions.
 
@@ -35,6 +38,12 @@ Run the converter by passing the GEO file and the desired DXF output file as com
 ```bash
 python main.py input_file.geo output_file.dxf
 ```
+To generate an SVG file from a GEO file, run:
+
+```bash
+python geo_to_svg.py input_file.geo output_file.svg
+```
+
 
 ## How It Works
 ### 1. Parsing the GEO File
@@ -57,6 +66,9 @@ The entity color is determined by checking if the parameter line includes tokens
 
 All entities include color information (DXF group code 62).
 
+
+### 3. Writing the SVG file
+  The geo_to_svg.py module reads the parsed GEO data and generates an SVG file. It calculates the drawing boundaries based on the points (and additional elements such as arcs and circles) and uses the `svgwrite` library to create SVG elements. The stroke color is set according to the same rules as for the DXF conversion (yellow if the parameter line contains tokens `2` or `3`, otherwise black).
 ## License
 This project is licensed under the MIT License. You are free to use, modify, and distribute the code provided that the original attribution is maintained.
 
