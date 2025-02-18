@@ -4,193 +4,159 @@ import math
 
 def parse_lst(lst_filename):
     """
-    Parsuje plik LST (kodowanie cp1250) i wyodrębnia geometrię ścieżki cięcia
-    z pierwszego bloku START_TEXT ... STOP_TEXT.
+    Parsuje sekcję START_TEXT ... STOP_TEXT z pliku LST (cp1250)
+    i rejestruje wszystkie ruchy – zarówno gdy laser jest włączony (cięcie/grawerka)
+    jak i gdy jest wyłączony (przejazdy). Dla ruchów z laserem wyłączonym przypisujemy kolor zielony (3).
 
-    Przyjmujemy:
-      - G90/G91 ustawiają tryb pozycji (domyślnie absolutny, ale w naszym przykładzie pojawia się G91).
-      - Jeśli linia zawiera X i/lub Y, a nie ma jawnej komendy G, zakładamy ruch liniowy (G01).
-      - Polecenia TC_LASER_ON – sprawdzamy parametry; jeśli zawierają "2" lub "3", ustawiamy kolor na 2 (grawerka),
-        w przeciwnym razie kolor pozostaje 7 (cięcie).
-
-    Na końcu, jeśli ostatni punkt różni się od pierwszego, dodajemy jeden segment łączący ostatni punkt z pierwszym.
-
-    Zwracane są:
-      - points: słownik {id: (x, y, z)}
-      - lines: lista [(p_start, p_end, color_idx), ...]
-      - arcs:  lista [(p_center, p_start, p_end, direction, color_idx), ...]
-      - circles: lista – pozostaje pusta.
+    Zwraca: points, lines, arcs, circles
     """
-    # Wczytujemy cały plik z kodowaniem cp1250
     with open(lst_filename, 'r', encoding='cp1250') as f:
         all_lines = f.readlines()
 
-    # Pobieramy tylko pierwszy blok START_TEXT ... STOP_TEXT
-    in_block = False
+    in_text = False
     gcode_lines = []
     for line in all_lines:
-        line = line.rstrip('\n')
+        line = line.strip()
         if "START_TEXT" in line:
-            in_block = True
+            in_text = True
             continue
-        if "STOP_TEXT" in line and in_block:
-            break  # przetwarzamy tylko pierwszy blok
-        if in_block:
-            gcode_lines.append(line.strip())
+        if "STOP_TEXT" in line:
+            in_text = False
+            continue
+        if in_text:
+            gcode_lines.append(line)
 
-    # Inicjujemy stan parsera
-    current_mode = 'absolute'  # domyślnie
-    last_motion = None  # ostatnia komenda ruchu (G01, G02, G03)
-    current_pos = [0.0, 0.0]
+    # Inicjalizacja stanu
+    current_mode = 'absolute'  # domyślnie G90
+    current_pos = [0.0, 0.0]  # układ arkusza – współrzędne globalne
     points = {}
     lines_geom = []
     arcs_geom = []
     circles_geom = []
     point_id_counter = 1
 
-    # Dodajemy punkt początkowy – zakładamy, że początkowa pozycja to (0,0)
+    # Dodajemy punkt startowy (przyjmujemy, że początek układu)
     points[point_id_counter] = (current_pos[0], current_pos[1], 0.0)
-    first_point_id = point_id_counter
     last_point_id = point_id_counter
     point_id_counter += 1
 
-    current_color = 7  # domyślny kolor: cięcie
+    # Kolory – current_color dla ruchów z laserem włączonym; travel_color = 3 dla przejazdów (laser off)
+    current_color = 7  # domyślnie (cięcie) lub 2 (grawerka)
+    travel_color = 3
+    last_command = None
+    laser_on = False  # domyślnie laser wyłączony
 
-    # Wzorzec do wyłapywania tokenów (G, X, Y, I, J)
-    token_pattern = re.compile(r'([A-Z])([-+]?[0-9]*\.?[0-9]+)', re.IGNORECASE)
+    token_pattern = re.compile(r'([A-Z])([-+]?[0-9]*\.?[0-9]+)')
 
     for line in gcode_lines:
-        # Pomijamy linie zawierające komunikaty (np. MSG)
-        if "MSG(" in line:
-            continue
-
-        # Obsługa poleceń laserowych
+        # Obsługa komend lasera – zmiana stanu
         if "TC_LASER_ON" in line:
             m = re.search(r'TC_LASER_ON\((.*?)\)', line)
             if m:
-                params = m.group(1)
-                # Parametry dzielone są przecinkami lub spacjami
-                tokens_param = re.split(r'[,\s]+', params)
+                params_str = m.group(1)
+                tokens_param = re.split(r'[,\s]+', params_str)
+                # Jeśli wśród parametrów występuje '2' lub '3', ustaw kolor na 2 (grawerka),
+                # w przeciwnym razie 7 (cięcie)
                 if '2' in tokens_param or '3' in tokens_param:
                     current_color = 2
                 else:
                     current_color = 7
-            continue  # nie traktujemy tej linii jako ruchu
+            laser_on = True
+            continue  # nie przetwarzamy tej linii jako ruchu
+
         if "TC_LASER_OFF" in line:
-            current_color = 7
+            laser_on = False
             continue
 
         # Pobieramy tokeny – ignorujemy numery linii (N...)
         tokens = token_pattern.findall(line)
-        tokens = [(letter.upper(), num) for letter, num in tokens]
+        tokens = [(letter.upper(), num) for letter, num in tokens if letter.upper() != 'N']
 
-        # Ustalamy, czy w linii jest komenda G
-        motion_cmd = None
-        for letter, num in tokens:
+        # Ustal komendę G
+        g_cmd = None
+        for letter, number in tokens:
             if letter == 'G':
-                if num == '90':
+                if number in ['90']:
                     current_mode = 'absolute'
-                elif num == '91':
+                    g_cmd = 'G90'
+                elif number in ['91']:
                     current_mode = 'incremental'
-                elif num in ['0', '00', '1', '01']:
-                    motion_cmd = 'G01'
-                elif num in ['2', '02']:
-                    motion_cmd = 'G02'
-                elif num in ['3', '03']:
-                    motion_cmd = 'G03'
-        # Jeśli nie ma jawnej komendy G, ale są współrzędne – zakładamy ruch liniowy
-        if motion_cmd is None:
-            if any(letter in ['X', 'Y'] for letter, num in tokens):
-                motion_cmd = 'G01'
-        if motion_cmd:
-            last_motion = motion_cmd
+                    g_cmd = 'G91'
+                elif number in ['0', '00']:
+                    g_cmd = 'G01'  # traktujemy szybki ruch jako liniowy
+                elif number in ['1', '01']:
+                    g_cmd = 'G01'
+                elif number in ['2', '02']:
+                    g_cmd = 'G02'  # łuk
+                elif number in ['3', '03']:
+                    g_cmd = 'G03'
+        if g_cmd:
+            last_command = g_cmd
         else:
-            motion_cmd = last_motion
-        if motion_cmd is None:
-            continue  # pomijamy linię, jeśli nie udało się ustalić komendy ruchu
+            g_cmd = last_command
+        if not g_cmd:
+            continue
 
-        # Pobieramy parametry X, Y, I, J (jeśli występują)
+        # Pobieramy parametry: X, Y, I, J
         x_val = None
         y_val = None
         i_val = 0.0
         j_val = 0.0
-        for letter, num in tokens:
+        for letter, number in tokens:
             if letter == 'X':
-                try:
-                    x_val = float(num)
-                except:
-                    pass
+                x_val = float(number)
             elif letter == 'Y':
-                try:
-                    y_val = float(num)
-                except:
-                    pass
+                y_val = float(number)
             elif letter == 'I':
-                try:
-                    i_val = float(num)
-                except:
-                    pass
+                i_val = float(number)
             elif letter == 'J':
-                try:
-                    j_val = float(num)
-                except:
-                    pass
+                j_val = float(number)
 
-        # Przetwarzamy ruch – w trybie incremental (G91) zgodnie z przykładem
-        if motion_cmd == 'G01':
-            # Jeśli brak X i Y, pomijamy
-            if x_val is None and y_val is None:
-                continue
-            new_x = current_pos[0]
-            new_y = current_pos[1]
-            if x_val is not None:
-                new_x = x_val if current_mode == 'absolute' else current_pos[0] + x_val
-            if y_val is not None:
-                new_y = y_val if current_mode == 'absolute' else current_pos[1] + y_val
+        # Obliczamy nowe współrzędne
+        if current_mode == 'absolute':
+            new_x = x_val if x_val is not None else current_pos[0]
+            new_y = y_val if y_val is not None else current_pos[1]
+        else:
+            new_x = current_pos[0] + (x_val if x_val is not None else 0.0)
+            new_y = current_pos[1] + (y_val if y_val is not None else 0.0)
+
+        # Wybieramy kolor użyty dla tego ruchu
+        used_color = current_color if laser_on else travel_color
+
+        if g_cmd in ['G01', 'G00']:
+            # Ruch liniowy
             points[point_id_counter] = (new_x, new_y, 0.0)
             new_point_id = point_id_counter
             point_id_counter += 1
-            lines_geom.append((last_point_id, new_point_id, current_color))
+            lines_geom.append((last_point_id, new_point_id, used_color))
             current_pos = [new_x, new_y]
             last_point_id = new_point_id
 
-        elif motion_cmd in ['G02', 'G03']:
-            new_x = current_pos[0]
-            new_y = current_pos[1]
-            if x_val is not None:
-                new_x = x_val if current_mode == 'absolute' else current_pos[0] + x_val
-            if y_val is not None:
-                new_y = y_val if current_mode == 'absolute' else current_pos[1] + y_val
-            # Dla łuku środek obliczamy jako bieżący punkt + (I, J)
+        elif g_cmd in ['G02', 'G03']:
+            # Ruch łukowy – wyznaczamy punkt końcowy i środek łuku
+            new_x_calc = new_x
+            new_y_calc = new_y
             center_x = current_pos[0] + i_val
             center_y = current_pos[1] + j_val
+            # Dodaj punkt środka
             points[point_id_counter] = (center_x, center_y, 0.0)
-            center_id = point_id_counter
+            center_point_id = point_id_counter
             point_id_counter += 1
-            points[point_id_counter] = (new_x, new_y, 0.0)
+            # Dodaj punkt końcowy
+            points[point_id_counter] = (new_x_calc, new_y_calc, 0.0)
             new_point_id = point_id_counter
             point_id_counter += 1
-            # Przyjmujemy: G03 = CCW (direction = 1), G02 = CW (direction = 0)
-            direction = 1 if motion_cmd == 'G03' else 0
-            arcs_geom.append((center_id, last_point_id, new_point_id, direction, current_color))
-            current_pos = [new_x, new_y]
+            direction = 1 if g_cmd == 'G03' else 0
+            arcs_geom.append((center_point_id, last_point_id, new_point_id, direction, used_color))
+            current_pos = [new_x_calc, new_y_calc]
             last_point_id = new_point_id
-
-    # Jeśli kontur nie jest zamknięty, dodajemy jeden segment łączący ostatni punkt z pierwszym.
-    first_pt = points[first_point_id]
-    last_pt = points[last_point_id]
-    if abs(first_pt[0] - last_pt[0]) > 1e-6 or abs(first_pt[1] - last_pt[1]) > 1e-6:
-        lines_geom.append((last_point_id, first_point_id, current_color))
 
     return points, lines_geom, arcs_geom, circles_geom
 
 
 def compute_arc_params(cx, cy, sx, sy, ex, ey, direction):
     """
-    Oblicza parametry łuku do zapisu w DXF:
-      - (cx, cy): środek łuku,
-      - r: promień,
-      - ang_s, ang_e: kąt początkowy i końcowy (w stopniach).
+    Oblicza parametry łuku do DXF: (xc, yc, r, angle_start, angle_end) w stopniach.
     """
     vx_s = sx - cx
     vy_s = sy - cy
@@ -209,27 +175,99 @@ def compute_arc_params(cx, cy, sx, sy, ex, ey, direction):
     return (cx, cy, r, a_s, a_e)
 
 
-def write_dxf(dxf_filename, points, lines, arcs, circles):
+def parse_sheet_contour(lst_filename):
     """
-    Zapisuje geometrię do pliku DXF (R12). Dla każdej linii, łuku lub okręgu
-    ustawiany jest kolor (group code 62) – 2 dla grawerki, 7 domyślnie.
+    Szuka w pliku LST linii zawierającej DA,'SHT-1' i próbuje odczytać wymiary arkusza.
+    Zakładamy, że po identyfikatorze SHT-1 następują szerokość i wysokość (w mm).
+    Zwraca kontur arkusza jako listę punktów:
+       [(0,0), (width,0), (width,height), (0,height), (0,0)]
+    lub None, jeśli nie znaleziono.
     """
-    with open(dxf_filename, 'w', encoding='utf-8') as f:
+    with open(lst_filename, 'r', encoding='cp1250') as f:
+        lines = f.readlines()
+    sheet_width = None
+    sheet_height = None
+    for line in lines:
+        if "DA,'SHT-1'" in line:
+            parts = line.strip().split(',')
+            try:
+                sheet_width = float(parts[2])
+                sheet_height = float(parts[3])
+                break
+            except Exception as e:
+                pass
+    if sheet_width is None or sheet_height is None:
+        return None
+    return [(0, 0), (sheet_width, 0), (sheet_width, sheet_height), (0, sheet_height), (0, 0)]
+
+
+def parse_part_position(lst_filename, detail_name):
+    """
+    Szuka w pliku LST sekcji BEGIN_PARTS_IN_PROGRAM_POS i próbuje odnaleźć
+    pozycję detalu o nazwie detail_name.
+    Zakładamy, że linia z danymi ma postać:
+      DA,1,'detail_name','NOID_1',offsetX,offsetY, ...
+    Zwraca offset (x, y) lub (0,0) jeśli nie znaleziono.
+    """
+    with open(lst_filename, 'r', encoding='cp1250') as f:
+        lines = f.readlines()
+    in_block = False
+    for line in lines:
+        if "BEGIN_PARTS_IN_PROGRAM_POS" in line:
+            in_block = True
+            continue
+        if "ENDE_PARTS_IN_PROGRAM_POS" in line and in_block:
+            in_block = False
+            break
+        if in_block and detail_name in line:
+            # Przykładowa linia: DA,1,'test_pr100x80_1','NOID_1',10.00,10.00,...
+            parts = line.strip().split(',')
+            try:
+                offset_x = float(parts[4])
+                offset_y = float(parts[5])
+                return (offset_x, offset_y)
+            except Exception as e:
+                return (0.0, 0.0)
+    return (0.0, 0.0)
+
+
+def write_dxf_with_sheet(dxf_filename, points, lines, arcs, circles, sheet_contour, part_offset):
+    """
+    Zapisuje plik DXF (R12) zawierający:
+      - Geometrię detalu (wszystkie ruchy – zarówno cięcia, jak i przejazdy),
+        przy czym geometrię przesuwamy o podany part_offset (offset detalu na arkuszu).
+      - Kontur arkusza (rysowany jako POLYLINE, kolor niebieski, np. 5).
+
+    Kolory:
+      - Ruchy z laserem włączonym: kolor zgodny z rejestrowanym (7 lub 2)
+      - Ruchy z laserem wyłączonym: zielony (3)
+      - Kontur arkusza: niebieski (5)
+    """
+
+    # Funkcja pomocnicza: przesunięcie punktu
+    def shift_point(pt, offset):
+        return (pt[0] + offset[0], pt[1] + offset[1], pt[2])
+
+    # Przesuwamy wszystkie punkty geometrii detalu
+    shifted_points = {}
+    for pid, pt in points.items():
+        shifted_points[pid] = shift_point(pt, part_offset)
+
+    with open(dxf_filename, 'w', encoding='cp1250') as f:
         f.write("0\nSECTION\n  2\nENTITIES\n")
-        # Zapis linii
+        # Zapisujemy linie i łuki
         for (p1, p2, color_idx) in lines:
-            x1, y1, _ = points[p1]
-            x2, y2, _ = points[p2]
+            x1, y1, _ = shifted_points[p1]
+            x2, y2, _ = shifted_points[p2]
             f.write("  0\nLINE\n")
             f.write("  8\n0\n")
             f.write(f" 62\n{color_idx}\n")
             f.write(f" 10\n{x1}\n 20\n{y1}\n")
             f.write(f" 11\n{x2}\n 21\n{y2}\n")
-        # Zapis łuków
         for (center_id, start_id, end_id, direction, color_idx) in arcs:
-            cx, cy, _ = points[center_id]
-            sx, sy, _ = points[start_id]
-            ex, ey, _ = points[end_id]
+            cx, cy, _ = shifted_points[center_id]
+            sx, sy, _ = shifted_points[start_id]
+            ex, ey, _ = shifted_points[end_id]
             (xc, yc, r, ang_s, ang_e) = compute_arc_params(cx, cy, sx, sy, ex, ey, direction)
             f.write("  0\nARC\n")
             f.write("  8\n0\n")
@@ -238,20 +276,38 @@ def write_dxf(dxf_filename, points, lines, arcs, circles):
             f.write(f" 40\n{r}\n")
             f.write(f" 50\n{ang_s}\n")
             f.write(f" 51\n{ang_e}\n")
-        # Zapis okręgów (jeśli występują)
         for (center_id, radius, color_idx) in circles:
-            cx, cy, _ = points[center_id]
+            cx, cy, _ = shifted_points[center_id]
             f.write("  0\nCIRCLE\n")
             f.write("  8\n0\n")
             f.write(f" 62\n{color_idx}\n")
             f.write(f" 10\n{cx}\n 20\n{cy}\n")
             f.write(f" 40\n{radius}\n")
+        # Zapis konturu arkusza – rysujemy POLYLINE, kolor niebieski (5)
+        if sheet_contour:
+            f.write("  0\nPOLYLINE\n")
+            f.write("  8\n0\n")
+            f.write(" 62\n5\n")
+            f.write(" 66\n1\n")
+            for (x, y) in sheet_contour:
+                f.write("  0\nVERTEX\n")
+                f.write("  8\n0\n")
+                f.write(f" 10\n{x}\n 20\n{y}\n 30\n0.0\n")
+            f.write("  0\nSEQEND\n")
         f.write("  0\nENDSEC\n  0\nEOF\n")
 
 
+# Przykładowe użycie:
 if __name__ == '__main__':
-    lst_filename = 'example.LST'  # Podaj ścieżkę do Twojego pliku LST
+    lst_filename = 'example.LST'  # Ścieżka do pliku LST
     dxf_filename = 'output.dxf'
+    # Odczyt geometrii detalu (wszystkich ruchów)
     pts, lines_geom, arcs_geom, circles_geom = parse_lst(lst_filename)
-    write_dxf(dxf_filename, pts, lines_geom, arcs_geom, circles_geom)
+    # Odczyt konturu arkusza (np. szerokość i wysokość)
+    sheet_contour = parse_sheet_contour(lst_filename)
+    # Odczyt pozycji detalu – nazwa detalu wg części programu
+    part_offset = parse_part_position(lst_filename, 'test_pr100x80_1')
+    print("Part offset:", part_offset)
+    # Zapis do DXF – geometrię detalu (przesuniętą) oraz kontur arkusza
+    write_dxf_with_sheet(dxf_filename, pts, lines_geom, arcs_geom, circles_geom, sheet_contour, part_offset)
     print("Plik DXF został wygenerowany:", dxf_filename)
